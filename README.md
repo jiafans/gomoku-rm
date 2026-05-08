@@ -3,6 +3,9 @@
 A Gomoku (五子棋) game for the **reMarkable 2** tablet, designed to run inside
 the [xovi / AppLoad](https://github.com/asivery/rm-appload) framework.
 
+**Status:** v1.0 — verified working on rM2 firmware `20260210094933`
+(kernel `5.4.70-v1.6.2-rm11x`).
+
 - 19×19 board (Go-standard intersections, A–T × 1–19 labels, 9 star points)
 - Play vs AI **or** local 2-player on the same device
 - Self-implemented Alpha-Beta engine with iterative deepening, candidate
@@ -107,6 +110,40 @@ deepening ensures we always have a "completed" depth's result when the
 [mintaka](https://github.com/junghyun397/mintaka) (Rust PVS+VCF) or
 [rapfi](https://github.com/dhbloo/rapfi) (Gomocup champion, via Gomocup
 protocol IPC) without touching the rest of the codebase.
+
+## Vendored upstream fixes
+
+The reMarkable 2's quirks force two small patches to upstream crates,
+both vendored under `vendor/` and applied via `[patch.crates-io]`:
+
+### `vendor/evdev/` (evdev 0.12.2)
+
+The rM2's `pt_mt` multitouch device emits `BTN_TOUCH` key events even though
+its `EVIOCGBIT(EV_KEY,…)` capability bitmap declares no key support. Vanilla
+evdev panics the input thread:
+
+```
+thread '<unnamed>' panicked at evdev-0.12.2/src/device_state.rs:115:22:
+got a key event despite not supporting keys
+```
+
+Patch: in `device_state.rs::process_event`, replace the `.expect()` calls
+with graceful `if let Some(...)` skips so the input thread stays alive
+when the corresponding state cache wasn't allocated.
+
+### `vendor/libremarkable/` (libremarkable 0.7.0)
+
+The rM2 touch driver does not report `ABS_MT_PRESSURE` (`min=0 max=0`), but
+libremarkable's multitouch handler only sets `finger.pressed = true` from
+the pressure event — so `MultitouchEvent::Press` is never produced and the
+app is "alive but deaf to touch."
+
+Patch: in `src/input/multitouch.rs`, in the `ABS_MT_TRACKING_ID` arm, treat
+a non-negative tracking_id as a pressed slot. This is the standard MT-B
+protocol interpretation. Release is still driven by `tracking_id == -1`.
+
+Together these two ~10-line patches make Rust + libremarkable + AppLoad
+work end-to-end on rM2 with the qtfb-shim input mode.
 
 ## Known limitations
 
