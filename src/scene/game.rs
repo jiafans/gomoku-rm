@@ -50,6 +50,8 @@ pub fn px_to_grid(x: i32, y: i32) -> Option<Pos> {
 
 pub struct GameScene {
     board: Board,
+    winner: Option<Color>,
+    banner_pending: bool,
     needs_full_redraw: bool,
     last_drawn_history_len: usize,
     started_at: Instant,
@@ -59,10 +61,36 @@ impl GameScene {
     pub fn new() -> Self {
         Self {
             board: Board::new(),
+            winner: None,
+            banner_pending: false,
             needs_full_redraw: true,
             last_drawn_history_len: 0,
             started_at: Instant::now(),
         }
+    }
+
+    fn reset_game(&mut self) {
+        self.board.reset();
+        self.winner = None;
+        self.banner_pending = false;
+        self.needs_full_redraw = true;
+        self.last_drawn_history_len = 0;
+    }
+
+    fn draw_winner_banner(canvas: &mut Canvas, winner: Color) {
+        // Center white box with black border
+        let box_w: u32 = 700;
+        let box_h: u32 = 220;
+        let bx = (SCREEN_W - box_w as i32) / 2;
+        let by = 850;
+        canvas.fill_rect(bx, by, box_w, box_h, color::WHITE);
+        canvas.draw_rect(bx, by, box_w, box_h, 4);
+        let label = match winner {
+            Color::Black => "Black Wins",
+            Color::White => "White Wins",
+        };
+        canvas.draw_text(bx + 130, by + 100, label, 80.0);
+        canvas.draw_text(bx + 130, by + 180, "Tap to play again", 32.0);
     }
 
     fn draw_board_grid(canvas: &mut Canvas) {
@@ -136,18 +164,23 @@ impl Scene for GameScene {
             event: MultitouchEvent::Press { finger },
         } = event
         {
+            // After a win, the next tap resets the board (new game).
+            if self.winner.is_some() {
+                self.reset_game();
+                return;
+            }
             let x = finger.pos.x as i32;
             let y = finger.pos.y as i32;
             if let Some(pos) = px_to_grid(x, y) {
                 if self.board.is_empty(pos) {
                     let side = self.board.current_side();
                     self.board.place(pos, side);
-                    log::info!(
-                        "placed {:?} at ({}, {})",
-                        side,
-                        pos.col(),
-                        pos.row()
-                    );
+                    log::info!("placed {:?} at ({}, {})", side, pos.col(), pos.row());
+                    if let Some(w) = self.board.winner() {
+                        self.winner = Some(w);
+                        self.banner_pending = true;
+                        log::info!("{:?} wins", w);
+                    }
                 }
             }
         }
@@ -178,5 +211,14 @@ impl Scene for GameScene {
             canvas.partial_refresh(Self::stone_region(pos));
         }
         self.last_drawn_history_len = self.board.history.len();
+
+        // Game-over banner — draw once, then full refresh so it composites cleanly.
+        if self.banner_pending {
+            if let Some(w) = self.winner {
+                Self::draw_winner_banner(canvas, w);
+                canvas.full_refresh();
+            }
+            self.banner_pending = false;
+        }
     }
 }
