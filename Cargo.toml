@@ -17,3 +17,10 @@ opt-level = 3
 lto = "thin"
 codegen-units = 1
 strip = "symbols"
+
+# Patched evdev: silences a panic ("got a key event despite not supporting keys")
+# triggered by reMarkable 2's pt_mt multitouch device, whose capability bitmap
+# omits EV_KEY but which still emits BTN_TOUCH events. The patch turns the
+# expect() into a graceful skip so the input thread stays alive.
+[patch.crates-io]
+evdev = { path = "vendor/evdev" }
