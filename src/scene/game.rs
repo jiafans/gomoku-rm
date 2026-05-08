@@ -24,6 +24,48 @@ pub enum GameMode {
 const STATUS_Y: i32 = 1700;
 const STATUS_H: u32 = 100;
 
+/// Bottom-bar buttons (always visible during play).
+#[derive(Clone, Copy)]
+struct ButtonRect {
+    x: i32,
+    y: i32,
+    w: u32,
+    h: u32,
+    label: &'static str,
+}
+
+impl ButtonRect {
+    fn contains(&self, px: i32, py: i32) -> bool {
+        px >= self.x
+            && px < self.x + self.w as i32
+            && py >= self.y
+            && py < self.y + self.h as i32
+    }
+    fn region(&self) -> mxcfb_rect {
+        mxcfb_rect {
+            top: self.y as u32,
+            left: self.x as u32,
+            width: self.w,
+            height: self.h,
+        }
+    }
+}
+
+const UNDO_BTN: ButtonRect = ButtonRect {
+    x: 50,
+    y: 1720,
+    w: 200,
+    h: 70,
+    label: "Undo",
+};
+const SAVE_BTN: ButtonRect = ButtonRect {
+    x: 1150,
+    y: 1720,
+    w: 220,
+    h: 70,
+    label: "Save & Quit",
+};
+
 // ---- Geometry ----
 pub const CELL_PX: i32 = 74;
 pub const BOARD_PX: i32 = CELL_PX * (BOARD_SIZE as i32 - 1); // 1332
@@ -74,6 +116,10 @@ pub struct GameScene {
     needs_full_redraw: bool,
     last_drawn_history_len: usize,
     started_at: Instant,
+    /// Set when Save & Quit is tapped — main loop polls done() to exit.
+    save_quit_pressed: bool,
+    /// Set when Undo is tapped — handled at start of next draw().
+    undo_pending: bool,
 }
 
 impl GameScene {
@@ -103,6 +149,66 @@ impl GameScene {
             needs_full_redraw: true,
             last_drawn_history_len: 0,
             started_at: Instant::now(),
+            save_quit_pressed: false,
+            undo_pending: false,
+        }
+    }
+
+    /// Hydrate a fresh GameScene from a previously serialized board state.
+    pub fn resume(mode: GameMode, board: Board) -> Self {
+        let engine = match mode {
+            GameMode::PvAi {
+                depth,
+                time_budget_ms,
+                ..
+            } => Some(AlphaBetaEngine::with_budget(depth, time_budget_ms)),
+            GameMode::Pvp => None,
+        };
+        // Detect terminal state on resumed board.
+        let winner = board.winner();
+        let banner_pending = winner.is_some();
+        Self {
+            board,
+            mode,
+            engine,
+            winner,
+            banner_pending,
+            needs_full_redraw: true,
+            last_drawn_history_len: 0,
+            started_at: Instant::now(),
+            save_quit_pressed: false,
+            undo_pending: false,
+        }
+    }
+
+    pub fn board(&self) -> &Board {
+        &self.board
+    }
+
+    pub fn mode(&self) -> GameMode {
+        self.mode
+    }
+
+    /// Pop one move (PvP) or until human's turn (PvAi).
+    fn undo(&mut self) {
+        if self.board.history.is_empty() {
+            return;
+        }
+        self.board.unplace_last();
+        if let GameMode::PvAi { ai, .. } = self.mode {
+            while self.board.current_side() == ai && !self.board.history.is_empty() {
+                self.board.unplace_last();
+            }
+        }
+        self.winner = None;
+        self.banner_pending = false;
+        self.needs_full_redraw = true;
+    }
+
+    fn auto_save(&self) {
+        let s = crate::savestate::Savestate::from_board(&self.board, self.mode);
+        if let Err(e) = crate::savestate::save(&s) {
+            log::error!("auto-save failed: {e:?}");
         }
     }
 
@@ -141,8 +247,23 @@ impl GameScene {
     }
 
     fn clear_status(canvas: &mut Canvas) {
-        Self::draw_status_clear(canvas);
-        canvas.partial_refresh(Self::status_region());
+        // Don't blank the whole status area — that wipes the buttons.
+        // Instead clear just the central 600px slice where "AI thinking…" sits.
+        let sx: i32 = 420;
+        let sw: u32 = 600;
+        canvas.fill_rect(sx, STATUS_Y, sw, STATUS_H, color::WHITE);
+        canvas.partial_refresh(mxcfb_rect {
+            top: STATUS_Y as u32,
+            left: sx as u32,
+            width: sw,
+            height: STATUS_H,
+        });
+    }
+
+    fn draw_button(canvas: &mut Canvas, btn: &ButtonRect) {
+        canvas.fill_rect(btn.x, btn.y, btn.w, btn.h, color::WHITE);
+        canvas.draw_rect(btn.x, btn.y, btn.w, btn.h, 3);
+        canvas.draw_text(btn.x + 20, btn.y + 50, btn.label, 38.0);
     }
 
     fn draw_winner_banner(canvas: &mut Canvas, winner: Color) {
@@ -232,13 +353,29 @@ impl Scene for GameScene {
             event: MultitouchEvent::Press { finger },
         } = event
         {
-            // After a win, the next tap resets the board (new game).
+            let x = finger.pos.x as i32;
+            let y = finger.pos.y as i32;
+
+            // Buttons take priority (always tappable, even after win).
+            if SAVE_BTN.contains(x, y) {
+                self.save_quit_pressed = true;
+                return;
+            }
+            if UNDO_BTN.contains(x, y) {
+                self.undo_pending = true;
+                return;
+            }
+            // After a win, any non-button tap resets the board (new game).
             if self.winner.is_some() {
                 self.reset_game();
                 return;
             }
-            let x = finger.pos.x as i32;
-            let y = finger.pos.y as i32;
+            // In PvAi mode, ignore taps when it's not human's turn.
+            if let Some(ai_side) = self.ai_side() {
+                if self.board.current_side() == ai_side {
+                    return;
+                }
+            }
             if let Some(pos) = px_to_grid(x, y) {
                 if self.board.is_empty(pos) {
                     let side = self.board.current_side();
@@ -249,12 +386,24 @@ impl Scene for GameScene {
                         self.banner_pending = true;
                         log::info!("{:?} wins", w);
                     }
+                    self.auto_save();
                 }
             }
         }
     }
 
+    fn done(&self) -> bool {
+        self.save_quit_pressed
+    }
+
     fn draw(&mut self, canvas: &mut Canvas) {
+        // Handle Undo before any rendering — affects board state.
+        if self.undo_pending {
+            self.undo();
+            self.undo_pending = false;
+            self.auto_save();
+        }
+
         if self.needs_full_redraw {
             canvas.clear();
             canvas.draw_text(540, 130, "Gomoku", 80.0);
@@ -262,6 +411,9 @@ impl Scene for GameScene {
             for (pos, c) in self.board.stones() {
                 Self::draw_stone(canvas, pos, c);
             }
+            // Always-visible bottom buttons.
+            Self::draw_button(canvas, &UNDO_BTN);
+            Self::draw_button(canvas, &SAVE_BTN);
             canvas.full_refresh();
             self.needs_full_redraw = false;
             self.last_drawn_history_len = self.board.history.len();
@@ -318,6 +470,7 @@ impl Scene for GameScene {
                             self.winner = Some(w);
                             self.banner_pending = true;
                         }
+                        self.auto_save();
                     } else {
                         log::error!(
                             "AI returned occupied square ({}, {}) — falling back",
