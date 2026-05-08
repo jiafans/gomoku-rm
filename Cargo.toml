@@ -18,9 +18,14 @@ lto = "thin"
 codegen-units = 1
 strip = "symbols"
 
-# Patched evdev: silences a panic ("got a key event despite not supporting keys")
-# triggered by reMarkable 2's pt_mt multitouch device, whose capability bitmap
-# omits EV_KEY but which still emits BTN_TOUCH events. The patch turns the
-# expect() into a graceful skip so the input thread stays alive.
+# Patched dependencies for the reMarkable 2 quirks:
+# - evdev: silences a panic ("got a key event despite not supporting keys")
+#   triggered by the rM2's pt_mt multitouch device, whose capability bitmap
+#   omits EV_KEY but which still emits BTN_TOUCH events.
+# - libremarkable: rM2's pt_mt does not emit ABS_MT_PRESSURE, so the upstream
+#   multitouch handler never sets `finger.pressed = true` and Press events
+#   are never produced. We treat a non-negative ABS_MT_TRACKING_ID as pressed,
+#   which is the standard MT-B protocol interpretation.
 [patch.crates-io]
 evdev = { path = "vendor/evdev" }
+libremarkable = { path = "vendor/libremarkable" }
