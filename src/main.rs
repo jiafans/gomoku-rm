@@ -1,5 +1,6 @@
 mod board;
 mod canvas;
+mod engine;
 mod scene;
 
 use crate::canvas::Canvas;
