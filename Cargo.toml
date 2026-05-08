@@ -1,8 +1,10 @@
 [package]
 name = "gomoku-rm"
-version = "0.1.0"
+version = "1.0.1"
 edition = "2021"
 description = "Gomoku game for reMarkable 2 (AppLoad / xovi)"
+license = "MIT"
+repository = "https://github.com/jiafans/gomoku-rm"
 
 [dependencies]
 libremarkable = "0.7.0"

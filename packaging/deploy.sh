@@ -9,7 +9,7 @@ BIN_NAME=gomoku-rm
 BIN=target/${TARGET}/release/${BIN_NAME}
 RM_HOST=${RM_HOST:-root@10.11.99.1}
 RM_APP_DIR=/home/root/xovi/exthome/appload/gomoku
-ICON=icon.png
+ICON=packaging/icon.png
 MANIFEST=packaging/external.manifest.json
 
 # 1) Build (cargo-zigbuild on Apple Silicon avoids cross/Docker x86_64 toolchain issues)
