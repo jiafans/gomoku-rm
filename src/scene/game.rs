@@ -2,10 +2,27 @@
 
 use crate::board::{Board, Color, Pos, BOARD_SIZE};
 use crate::canvas::{Canvas, SCREEN_W};
+use crate::engine::{AlphaBetaEngine, Engine};
 use crate::scene::Scene;
 use libremarkable::framebuffer::common::{color, mxcfb_rect};
 use libremarkable::input::{InputEvent, MultitouchEvent};
 use std::time::Instant;
+
+#[derive(Clone, Copy, Debug)]
+pub enum GameMode {
+    /// Human plays both sides locally.
+    Pvp,
+    /// AI controls one color; the other is human.
+    PvAi {
+        ai: Color,
+        depth: u8,
+        time_budget_ms: u64,
+    },
+}
+
+/// Vertical region used for the "AI thinking…" indicator (below the board).
+const STATUS_Y: i32 = 1700;
+const STATUS_H: u32 = 100;
 
 // ---- Geometry ----
 pub const CELL_PX: i32 = 74;
@@ -50,6 +67,8 @@ pub fn px_to_grid(x: i32, y: i32) -> Option<Pos> {
 
 pub struct GameScene {
     board: Board,
+    mode: GameMode,
+    engine: Option<AlphaBetaEngine>,
     winner: Option<Color>,
     banner_pending: bool,
     needs_full_redraw: bool,
@@ -59,13 +78,38 @@ pub struct GameScene {
 
 impl GameScene {
     pub fn new() -> Self {
+        Self::with_mode(GameMode::PvAi {
+            ai: Color::White,
+            depth: 4,
+            time_budget_ms: 3000,
+        })
+    }
+
+    pub fn with_mode(mode: GameMode) -> Self {
+        let engine = match mode {
+            GameMode::PvAi {
+                depth,
+                time_budget_ms,
+                ..
+            } => Some(AlphaBetaEngine::with_budget(depth, time_budget_ms)),
+            GameMode::Pvp => None,
+        };
         Self {
             board: Board::new(),
+            mode,
+            engine,
             winner: None,
             banner_pending: false,
             needs_full_redraw: true,
             last_drawn_history_len: 0,
             started_at: Instant::now(),
+        }
+    }
+
+    fn ai_side(&self) -> Option<Color> {
+        match self.mode {
+            GameMode::PvAi { ai, .. } => Some(ai),
+            GameMode::Pvp => None,
         }
     }
 
@@ -75,6 +119,30 @@ impl GameScene {
         self.banner_pending = false;
         self.needs_full_redraw = true;
         self.last_drawn_history_len = 0;
+    }
+
+    fn draw_status_clear(canvas: &mut Canvas) {
+        canvas.fill_rect(0, STATUS_Y, SCREEN_W as u32, STATUS_H, color::WHITE);
+    }
+
+    fn status_region() -> mxcfb_rect {
+        mxcfb_rect {
+            top: STATUS_Y as u32,
+            left: 0,
+            width: SCREEN_W as u32,
+            height: STATUS_H,
+        }
+    }
+
+    fn show_thinking(canvas: &mut Canvas) {
+        Self::draw_status_clear(canvas);
+        canvas.draw_text(480, STATUS_Y + 60, "AI thinking…", 50.0);
+        canvas.partial_refresh_sync(Self::status_region());
+    }
+
+    fn clear_status(canvas: &mut Canvas) {
+        Self::draw_status_clear(canvas);
+        canvas.partial_refresh(Self::status_region());
     }
 
     fn draw_winner_banner(canvas: &mut Canvas, winner: Color) {
@@ -219,6 +287,47 @@ impl Scene for GameScene {
                 canvas.full_refresh();
             }
             self.banner_pending = false;
+            return;
+        }
+
+        // AI's turn? Run search synchronously in this frame.
+        if self.winner.is_none() {
+            if let (Some(ai_side), Some(engine)) =
+                (self.ai_side(), self.engine.as_mut())
+            {
+                if self.board.current_side() == ai_side {
+                    Self::show_thinking(canvas);
+                    let budget = match self.mode {
+                        GameMode::PvAi { time_budget_ms, .. } => time_budget_ms,
+                        _ => 3000,
+                    };
+                    let mv = engine.best_move(&self.board, ai_side, budget);
+                    if self.board.is_empty(mv) {
+                        self.board.place(mv, ai_side);
+                        log::info!(
+                            "AI placed {:?} at ({}, {})",
+                            ai_side,
+                            mv.col(),
+                            mv.row()
+                        );
+                        Self::draw_stone(canvas, mv, ai_side);
+                        Self::clear_status(canvas);
+                        canvas.partial_refresh(Self::stone_region(mv));
+                        self.last_drawn_history_len = self.board.history.len();
+                        if let Some(w) = self.board.winner() {
+                            self.winner = Some(w);
+                            self.banner_pending = true;
+                        }
+                    } else {
+                        log::error!(
+                            "AI returned occupied square ({}, {}) — falling back",
+                            mv.col(),
+                            mv.row()
+                        );
+                        Self::clear_status(canvas);
+                    }
+                }
+            }
         }
     }
 }

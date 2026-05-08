@@ -1,8 +1,10 @@
 //! Game engine: shape recognition, position evaluation, search.
 
+pub mod alphabeta;
 pub mod evaluate;
 pub mod shape;
 
+pub use alphabeta::AlphaBetaEngine;
 pub use evaluate::evaluate;
 
 use crate::board::{Board, Color, Pos};

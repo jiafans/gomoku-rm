@@ -47,6 +47,21 @@ impl Canvas {
         );
     }
 
+    /// Synchronous partial refresh — blocks until pixels are pushed to e-ink.
+    /// Use before kicking off a long blocking task (e.g. AI search) so the
+    /// "thinking" indicator actually appears before we block.
+    pub fn partial_refresh_sync(&mut self, region: mxcfb_rect) {
+        self.fb.partial_refresh(
+            &region,
+            PartialRefreshMode::Wait,
+            waveform_mode::WAVEFORM_MODE_GC16_FAST,
+            display_temp::TEMP_USE_REMARKABLE_DRAW,
+            dither_mode::EPDC_FLAG_USE_REMARKABLE_DITHER,
+            0,
+            false,
+        );
+    }
+
     pub fn draw_text(&mut self, x: i32, y: i32, text: &str, size: f32) -> mxcfb_rect {
         self.fb.draw_text(
             Point2 {
