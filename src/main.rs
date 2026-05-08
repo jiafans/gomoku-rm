@@ -1,34 +1,17 @@
 mod board;
 mod canvas;
+mod config;
 mod engine;
+mod i18n;
 mod savestate;
 mod scene;
 
-use crate::board::Board;
 use crate::canvas::Canvas;
-use crate::scene::game::GameMode;
-use crate::scene::{GameScene, Scene};
+use crate::scene::{MainMenuScene, Scene, Transition};
 use libremarkable::input::{ev::EvDevContext, InputDevice, InputEvent};
 use std::sync::mpsc::channel;
 use std::thread::sleep;
 use std::time::{Duration, Instant};
-
-fn make_scene() -> GameScene {
-    if let Some(state) = savestate::load() {
-        log::info!(
-            "loaded savestate: {} stones, mode={:?}",
-            state.history.len(),
-            state.mode
-        );
-        let mut board = Board::new();
-        state.restore_into(&mut board);
-        let mode: GameMode = state.mode.into();
-        GameScene::resume(mode, board)
-    } else {
-        log::info!("no savestate, starting new game");
-        GameScene::new()
-    }
-}
 
 fn main() {
     if std::env::var("RUST_LOG").is_err() {
@@ -37,8 +20,10 @@ fn main() {
     env_logger::init();
     log::info!("gomoku-rm starting");
 
+    config::init();
+
     let mut canvas = Canvas::new();
-    let mut current: Box<dyn Scene> = Box::new(make_scene());
+    let mut current: Box<dyn Scene> = Box::new(MainMenuScene::new());
 
     let (tx, rx) = channel::<InputEvent>();
     EvDevContext::new(InputDevice::Multitouch, tx).start();
@@ -52,8 +37,13 @@ fn main() {
             current.on_input(event);
         }
         current.draw(&mut canvas);
-        if current.done() {
-            break;
+        if let Some(transition) = current.take_transition() {
+            match transition {
+                Transition::Replace(next) => {
+                    current = next;
+                }
+                Transition::Exit => break,
+            }
         }
         let elapsed = frame_start.elapsed();
         if elapsed < FRAME {

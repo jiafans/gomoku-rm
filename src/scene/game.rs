@@ -3,7 +3,9 @@
 use crate::board::{Board, Color, Pos, BOARD_SIZE};
 use crate::canvas::{Canvas, SCREEN_W};
 use crate::engine::{AlphaBetaEngine, Engine};
-use crate::scene::Scene;
+use crate::i18n::t;
+use crate::scene::menu::MainMenuScene;
+use crate::scene::{Scene, Transition};
 use libremarkable::framebuffer::common::{color, mxcfb_rect};
 use libremarkable::input::{InputEvent, MultitouchEvent};
 use std::time::Instant;
@@ -31,7 +33,7 @@ struct ButtonRect {
     y: i32,
     w: u32,
     h: u32,
-    label: &'static str,
+    label_key: &'static str,
 }
 
 impl ButtonRect {
@@ -56,14 +58,14 @@ const UNDO_BTN: ButtonRect = ButtonRect {
     y: 1720,
     w: 200,
     h: 70,
-    label: "Undo",
+    label_key: "game.undo",
 };
 const SAVE_BTN: ButtonRect = ButtonRect {
     x: 1150,
     y: 1720,
     w: 220,
     h: 70,
-    label: "Save & Quit",
+    label_key: "game.save_quit",
 };
 
 // ---- Geometry ----
@@ -116,10 +118,10 @@ pub struct GameScene {
     needs_full_redraw: bool,
     last_drawn_history_len: usize,
     started_at: Instant,
-    /// Set when Save & Quit is tapped — main loop polls done() to exit.
-    save_quit_pressed: bool,
     /// Set when Undo is tapped — handled at start of next draw().
     undo_pending: bool,
+    /// When set, returned to main loop on the next take_transition() call.
+    pending_transition: Option<Transition>,
 }
 
 impl GameScene {
@@ -149,8 +151,8 @@ impl GameScene {
             needs_full_redraw: true,
             last_drawn_history_len: 0,
             started_at: Instant::now(),
-            save_quit_pressed: false,
             undo_pending: false,
+            pending_transition: None,
         }
     }
 
@@ -176,8 +178,8 @@ impl GameScene {
             needs_full_redraw: true,
             last_drawn_history_len: 0,
             started_at: Instant::now(),
-            save_quit_pressed: false,
             undo_pending: false,
+            pending_transition: None,
         }
     }
 
@@ -242,7 +244,7 @@ impl GameScene {
 
     fn show_thinking(canvas: &mut Canvas) {
         Self::draw_status_clear(canvas);
-        canvas.draw_text(480, STATUS_Y + 60, "AI thinking…", 50.0);
+        canvas.draw_text(480, STATUS_Y + 60, t("game.thinking"), 50.0);
         canvas.partial_refresh_sync(Self::status_region());
     }
 
@@ -263,7 +265,7 @@ impl GameScene {
     fn draw_button(canvas: &mut Canvas, btn: &ButtonRect) {
         canvas.fill_rect(btn.x, btn.y, btn.w, btn.h, color::WHITE);
         canvas.draw_rect(btn.x, btn.y, btn.w, btn.h, 3);
-        canvas.draw_text(btn.x + 20, btn.y + 50, btn.label, 38.0);
+        canvas.draw_text(btn.x + 20, btn.y + 50, t(btn.label_key), 38.0);
     }
 
     fn draw_winner_banner(canvas: &mut Canvas, winner: Color) {
@@ -274,12 +276,12 @@ impl GameScene {
         let by = 850;
         canvas.fill_rect(bx, by, box_w, box_h, color::WHITE);
         canvas.draw_rect(bx, by, box_w, box_h, 4);
-        let label = match winner {
-            Color::Black => "Black Wins",
-            Color::White => "White Wins",
+        let label_key = match winner {
+            Color::Black => "game.win_black",
+            Color::White => "game.win_white",
         };
-        canvas.draw_text(bx + 130, by + 100, label, 80.0);
-        canvas.draw_text(bx + 130, by + 180, "Tap to play again", 32.0);
+        canvas.draw_text(bx + 130, by + 100, t(label_key), 80.0);
+        canvas.draw_text(bx + 130, by + 180, t("game.tap_again"), 32.0);
     }
 
     fn draw_board_grid(canvas: &mut Canvas) {
@@ -358,7 +360,9 @@ impl Scene for GameScene {
 
             // Buttons take priority (always tappable, even after win).
             if SAVE_BTN.contains(x, y) {
-                self.save_quit_pressed = true;
+                // Save state already auto-saved on each move; just navigate back.
+                self.pending_transition =
+                    Some(Transition::Replace(Box::new(MainMenuScene::new())));
                 return;
             }
             if UNDO_BTN.contains(x, y) {
@@ -392,8 +396,8 @@ impl Scene for GameScene {
         }
     }
 
-    fn done(&self) -> bool {
-        self.save_quit_pressed
+    fn take_transition(&mut self) -> Option<Transition> {
+        self.pending_transition.take()
     }
 
     fn draw(&mut self, canvas: &mut Canvas) {
